@@ -9,21 +9,34 @@ package mr
 import "os"
 import "strconv"
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
+type Args struct {
+	Job      Job
+	IsFinish bool
+	WorkNum  int
+	NReduce  int
 }
 
-type ExampleReply struct {
-	Y int
+type Job struct {
+	FileName string
+	//true  : reduce
+	//false : map
+	JobType bool
+	//发送给worker执行的次数
+	SendTimes int
+}
+
+type Set map[string]struct{}
+
+func (s Set) contains(str string) bool {
+	_, ok := s[str]
+	return ok
+}
+
+func (s Set) add(str string) {
+	s[str] = struct{}{}
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

@@ -6,7 +6,10 @@ package main
 // go run mrsequential.go wc.so pg*.txt
 //
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 import "6.5840/mr"
 import "plugin"
 import "os"
@@ -28,7 +31,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	mapf, reducef := loadPlugin(os.Args[1])
+	var mapf func(string, string) []mr.KeyValue
+	var reducef func(string, []string) string
+
+	if runtime.GOOS == "windows" {
+	} else {
+		mapf, reducef = loadPlugin(os.Args[1])
+
+	}
 
 	//
 	// read each input file,
