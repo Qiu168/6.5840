@@ -9,6 +9,7 @@ package mr
 import "os"
 import "strconv"
 
+// Args :RPC args
 type Args struct {
 	Job      *Job
 	IsFinish bool
@@ -38,6 +39,7 @@ type Job struct {
 	Result    string
 }
 
+// Set : EASY Set
 type Set map[string]struct{}
 
 func (s Set) contains(str string) bool {

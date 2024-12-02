@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 )
 
 type Coordinator struct {
@@ -26,7 +27,7 @@ type Coordinator struct {
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
-	rpc.Register(c)
+	_ = rpc.Register(c)
 	rpc.HandleHTTP()
 	var l net.Listener
 	var e error
@@ -34,7 +35,7 @@ func (c *Coordinator) server() {
 		l, e = net.Listen("tcp", ":1234")
 	} else {
 		sockname := coordinatorSock()
-		os.Remove(sockname)
+		_ = os.Remove(sockname)
 		l, e = net.Listen("tcp", sockname)
 	}
 	if e != nil {
@@ -125,34 +126,52 @@ func (c *Coordinator) GetJob(a *Args, args *Args) error {
 	}
 }
 
-var resultMap = make(map[string]string)
+var (
+	resultMap   = make(map[string]string)
+	finishedSet = make(Set)
+	mutex       = &sync.Mutex{}
+)
 
 func (c *Coordinator) Finish(args *Args, _ *struct{}) error {
 	c.finishSet.add(args.Job.FileName)
-	var jobType string
-	if args.Job.JobType {
-		jobType = "reduce"
-		_, ok := resultMap[args.Job.FileName]
-		if !ok {
-			resultMap[args.Job.FileName] = args.Job.Result
-		}
-	} else {
+
+	jobType := "reduce"
+	if !args.Job.JobType {
 		jobType = "map"
 	}
+
 	fmt.Printf("job type:%s, fileName: %s, sendTimes:%d\n", jobType, args.Job.FileName, args.Job.SendTimes)
-	c.jobCount--
-	if c.jobCount == c.nReduce+1 {
-		c.state <- struct{}{}
-	}
-	if c.jobCount == 1 {
-		var resultStr string
-		for k := range resultMap {
-			resultStr += resultMap[k]
-		}
-		_ = writeToFile("mr-out-1", resultStr)
-		//这步可以去掉。因为测试脚本对比时会排序
-		sortFile("mr-out-1")
+
+	key := fmt.Sprintf("%s-%s", jobType, args.Job.FileName)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if !finishedSet.contains(key) {
+		finishedSet.add(key)
 		c.jobCount--
+
+		if args.Job.JobType {
+			resultMap[args.Job.FileName] = args.Job.Result
+		}
+
+		if c.jobCount == c.nReduce+1 {
+			c.state <- struct{}{}
+		} else if c.jobCount == 1 {
+			go c.writeAndSortFinalResult()
+		}
 	}
+
 	return nil
+}
+
+func (c *Coordinator) writeAndSortFinalResult() {
+	var resultStr string
+	for _, result := range resultMap {
+		resultStr += result
+	}
+	if err := writeToFile("mr-out-1", resultStr); err != nil {
+		log.Printf("Error writing to file: %v", err)
+	}
+	sortFile("mr-out-1")
+	c.jobCount--
 }

@@ -16,7 +16,6 @@ import (
 	"sync"
 )
 
-// Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
 	Value string
@@ -30,97 +29,104 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-// main/mrworker.go calls this function.
+// Worker main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	// Your worker implementation here.
-	var args = &Args{WorkNum: -1}
+	args := &Args{WorkNum: -1}
 
 	for !args.IsFinish {
 		args = getJob(args)
 
-		fileName := args.Job.FileName
-		if !args.Job.JobType {
-			file, err := os.ReadFile(fileName)
-			if err != nil {
-				continue
-			}
-			//执行mapf方法
-			keyValues := mapf(fileName, string(file))
-			//写文件
-			err = writeKV(keyValues, args.WorkNum, args.NReduce)
-			if err != nil {
-				fmt.Printf("map write kv error : %v", err)
-				return
-			}
-			//告诉master map执行完了
-			finish(args)
+		if args.Job.JobType {
+			handleReduceJob(args, reducef)
 		} else {
-			//如果是Reduce，获取中间文件
-			file, err := os.Open(fileName)
-			if err != nil {
-				return
-			}
-			all, err := io.ReadAll(file)
-			if err != nil {
-				return
-			}
-			split := strings.Split(string(all), "\n")
-			m := make(map[string][]string)
-			for i := range split {
-				str := split[i]
-				if strings.TrimSpace(str) == "" {
-					continue
-				}
-				kv := strings.Split(str, ":")
-				if m[kv[0]] == nil {
-					m[kv[0]] = make([]string, 0)
-				}
-				if len(kv) != 2 {
-					fmt.Println("kv no :", kv, " kv.size:", len(kv))
-					continue
-				}
-				m[kv[0]] = append(m[kv[0]], kv[1])
-			}
-			//执行reduce
-			var s string
-			//oname := "mr-out-1"
-			var outStr string
-			for kv := range m {
-				s = reducef(kv, m[kv])
-				outStr += fmt.Sprintf("%s\t%s\n", kv, s)
-			}
-			//err = writeToFile(oname, outStr)
-			//if err != nil {
-			//	log.Fatal(err)
-			//	return
-			//}
-			args.Job.Result = outStr
-			finish(args)
+			handleMapJob(args, mapf)
 		}
+
+		finish(args)
 	}
 }
 
-func sortFile(oname string) {
+func handleMapJob(args *Args, mapf func(string, string) []KeyValue) {
+	file, err := os.ReadFile(args.Job.FileName)
+	if err != nil {
+		log.Printf("Error reading file %s: %v", args.Job.FileName, err)
+		return
+	}
+
+	keyValues := mapf(args.Job.FileName, string(file))
+	if err := writeKV(keyValues, args.WorkNum, args.NReduce); err != nil {
+		log.Printf("Error in map write kv: %v", err)
+	}
+}
+
+func handleReduceJob(args *Args, reducef func(string, []string) string) {
+	content, err := os.ReadFile(args.Job.FileName)
+	if err != nil {
+		log.Printf("Error reading file %s: %v", args.Job.FileName, err)
+		return
+	}
+
+	kvMap := parseContent(string(content))
+	var outStr string
+	for key, values := range kvMap {
+		result := reducef(key, values)
+		outStr += fmt.Sprintf("%v\t%v\n", key, result)
+	}
+	args.Job.Result = outStr
+}
+
+func parseContent(content string) map[string][]string {
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	kvMap := make(map[string][]string)
+	for _, line := range lines {
+		kv := strings.SplitN(line, ":", 2)
+		if len(kv) != 2 {
+			log.Printf("Invalid line format: %s", line)
+			continue
+		}
+		key, value := kv[0], kv[1]
+		kvMap[key] = append(kvMap[key], value)
+	}
+	return kvMap
+}
+
+func sortFile(oname string) error {
 	file, err := os.OpenFile(oname, os.O_RDWR, fs.ModePerm)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
-	// 先读取文件内容
+
+	// 读取文件内容
 	content, err := io.ReadAll(file)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to read file: %w", err)
 	}
-	// 将文件内容按行分割
+
+	// 将文件内容按行分割并排序
 	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	// 对行进行排序
 	sort.Strings(lines)
-	// 将排序后的行写回文件
-	_ = file.Truncate(0)
-	_, _ = file.Seek(0, 0)
-	for _, line := range lines {
-		_, _ = file.WriteString(line + "\n")
+
+	// 清空文件并写入排序后的内容
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("failed to truncate file: %w", err)
 	}
+	if _, err := file.Seek(0, 0); err != nil {
+		return fmt.Errorf("failed to seek file: %w", err)
+	}
+
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		if _, err := writer.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("failed to write line: %w", err)
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("failed to flush writer: %w", err)
+	}
+
+	return nil
 }
 
 func finish(args *Args) {
