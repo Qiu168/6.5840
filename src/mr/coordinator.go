@@ -36,7 +36,7 @@ func (c *Coordinator) server() {
 	} else {
 		sockname := coordinatorSock()
 		_ = os.Remove(sockname)
-		l, e = net.Listen("tcp", sockname)
+		l, e = net.Listen("unix", sockname)
 	}
 	if e != nil {
 		log.Fatal("listen error:", e)
