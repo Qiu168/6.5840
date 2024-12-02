@@ -10,11 +10,23 @@ import "os"
 import "strconv"
 
 type Args struct {
-	Job      Job
+	Job      *Job
 	IsFinish bool
 	WorkNum  int
 	NReduce  int
 }
+
+//func CopyArgs(source *Args, target *Args) {
+//	target.Job = &Job{
+//		FileName:  source.Job.FileName,
+//		JobType:   source.Job.JobType,
+//		SendTimes: source.Job.SendTimes,
+//		Result:    source.Job.Result,
+//	}
+//	target.IsFinish = source.IsFinish
+//	target.WorkNum = source.WorkNum
+//	target.NReduce = source.NReduce
+//}
 
 type Job struct {
 	FileName string
@@ -23,6 +35,7 @@ type Job struct {
 	JobType bool
 	//发送给worker执行的次数
 	SendTimes int
+	Result    string
 }
 
 type Set map[string]struct{}

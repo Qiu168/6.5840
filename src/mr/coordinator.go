@@ -1,34 +1,42 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 )
 
 type Coordinator struct {
 	// Your definitions here.
-	jobQueue  chan Job
-	waitQueue chan Job
+	jobQueue  chan *Job
+	waitQueue chan *Job
 	// 未完成的job数量
 	jobCount  int
 	finishSet Set
 	nReduce   int
-	//
-	state bool
+	// 提示已进入reduce阶段
+	state chan struct{}
 }
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	var l net.Listener
+	var e error
+	if runtime.GOOS == "windows" {
+		l, e = net.Listen("tcp", ":1234")
+	} else {
+		sockname := coordinatorSock()
+		os.Remove(sockname)
+		l, e = net.Listen("tcp", sockname)
+	}
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
@@ -38,7 +46,7 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire Job has finished.
 func (c *Coordinator) Done() bool {
-	return c.jobCount == 0
+	return c.jobCount <= 0
 }
 
 // create a Coordinator.
@@ -55,34 +63,96 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		preciseFileName = append(preciseFileName, fileNames...)
 	}
 	c := Coordinator{
-		jobQueue:  make(chan Job, nReduce+len(preciseFileName)),
-		waitQueue: make(chan Job, nReduce+len(preciseFileName)),
-		jobCount:  nReduce + len(preciseFileName),
+		jobQueue:  make(chan *Job, nReduce+len(preciseFileName)),
+		waitQueue: make(chan *Job, nReduce+len(preciseFileName)),
+		state:     make(chan struct{}),
+		finishSet: make(Set),
+		jobCount:  nReduce + len(preciseFileName) + 1,
 		nReduce:   nReduce,
 	}
-
+	for i := range preciseFileName {
+		c.jobQueue <- &Job{
+			FileName:  preciseFileName[i],
+			JobType:   false,
+			SendTimes: 0,
+		}
+	}
+	go func() {
+		for range c.state {
+			for i := 0; i < nReduce; i++ {
+				c.jobQueue <- &Job{
+					FileName:  "1-" + strconv.Itoa(i) + ".txt",
+					JobType:   true,
+					SendTimes: 0,
+				}
+			}
+			return
+		}
+	}()
 	c.server()
 	return &c
 }
-func (c *Coordinator) GetJob(args Args) Args {
+
+func (c *Coordinator) GetJob(a *Args, args *Args) error {
+	args.NReduce = c.nReduce
+	if a.WorkNum == -1 {
+		args.WorkNum = 1
+	}
 	if c.jobCount == 0 {
 		args.IsFinish = true
-		return args
+		return nil
 	}
+	// 优先返回jobQueue任务
 	if len(c.jobQueue) != 0 {
 		job := <-c.jobQueue
 		args.Job = job
-		return args
+		job.SendTimes++
+		return nil
 	}
-	job := <-c.waitQueue
-	for c.finishSet.contains(job.FileName) {
-		job = <-c.waitQueue
+	select {
+	case job := <-c.jobQueue:
+		args.Job = job
+		job.SendTimes++
+		return nil
+	case job := <-c.waitQueue:
+		for c.finishSet.contains(job.FileName) {
+			job = <-c.waitQueue
+		}
+		job.SendTimes++
+		c.waitQueue <- job
+		args.Job = job
+		return nil
 	}
-	c.waitQueue <- job
-	args.Job = job
-	return args
 }
-func (c *Coordinator) Finish(args Args) {
+
+var resultMap = make(map[string]string)
+
+func (c *Coordinator) Finish(args *Args, _ *struct{}) error {
 	c.finishSet.add(args.Job.FileName)
+	var jobType string
+	if args.Job.JobType {
+		jobType = "reduce"
+		_, ok := resultMap[args.Job.FileName]
+		if !ok {
+			resultMap[args.Job.FileName] = args.Job.Result
+		}
+	} else {
+		jobType = "map"
+	}
+	fmt.Printf("job type:%s, fileName: %s, sendTimes:%d\n", jobType, args.Job.FileName, args.Job.SendTimes)
 	c.jobCount--
+	if c.jobCount == c.nReduce+1 {
+		c.state <- struct{}{}
+	}
+	if c.jobCount == 1 {
+		var resultStr string
+		for k := range resultMap {
+			resultStr += resultMap[k]
+		}
+		_ = writeToFile("mr-out-1", resultStr)
+		//这步可以去掉。因为测试脚本对比时会排序
+		sortFile("mr-out-1")
+		c.jobCount--
+	}
+	return nil
 }

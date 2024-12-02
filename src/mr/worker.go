@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"bufio"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -8,8 +9,11 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Map functions return a slice of KeyValue.
@@ -30,7 +34,7 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	// Your worker implementation here.
 	var args = &Args{WorkNum: -1}
-	// 规定map的num为奇数，reduce的num为偶数
+
 	for !args.IsFinish {
 		args = getJob(args)
 
@@ -45,12 +49,13 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			//写文件
 			err = writeKV(keyValues, args.WorkNum, args.NReduce)
 			if err != nil {
+				fmt.Printf("map write kv error : %v", err)
 				return
 			}
 			//告诉master map执行完了
 			finish(args)
 		} else {
-			//如果是Reduce，获取map文件
+			//如果是Reduce，获取中间文件
 			file, err := os.Open(fileName)
 			if err != nil {
 				return
@@ -62,52 +67,111 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			split := strings.Split(string(all), "\n")
 			m := make(map[string][]string)
 			for i := range split {
-				str := strings.TrimSpace(split[i])
+				str := split[i]
+				if strings.TrimSpace(str) == "" {
+					continue
+				}
 				kv := strings.Split(str, ":")
 				if m[kv[0]] == nil {
 					m[kv[0]] = make([]string, 0)
+				}
+				if len(kv) != 2 {
+					fmt.Println("kv no :", kv, " kv.size:", len(kv))
+					continue
 				}
 				m[kv[0]] = append(m[kv[0]], kv[1])
 			}
 			//执行reduce
 			var s string
+			//oname := "mr-out-1"
+			var outStr string
 			for kv := range m {
 				s = reducef(kv, m[kv])
-				oname := "mr-out-1"
-				ofile, _ := os.Create(oname)
-				fmt.Fprintf(ofile, "%v %v\n", kv, s)
+				outStr += fmt.Sprintf("%s\t%s\n", kv, s)
 			}
+			//err = writeToFile(oname, outStr)
+			//if err != nil {
+			//	log.Fatal(err)
+			//	return
+			//}
+			args.Job.Result = outStr
 			finish(args)
 		}
+	}
+}
 
+func sortFile(oname string) {
+	file, err := os.OpenFile(oname, os.O_RDWR, fs.ModePerm)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	// 先读取文件内容
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return
+	}
+	// 将文件内容按行分割
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	// 对行进行排序
+	sort.Strings(lines)
+	// 将排序后的行写回文件
+	_ = file.Truncate(0)
+	_, _ = file.Seek(0, 0)
+	for _, line := range lines {
+		_, _ = file.WriteString(line + "\n")
 	}
 }
 
 func finish(args *Args) {
-	call("coordinator.Finish", args, nil)
+	call("Coordinator.Finish", args, &struct{}{})
 }
 
 func getJob(args *Args) *Args {
-	call("coordinator.GetJob", args, &args)
+	call("Coordinator.GetJob", args, args)
 	return args
 }
 
-type void struct{}
-
-var v void
-
 func writeKV(kv []KeyValue, workNum int, nReduce int) error {
-	set := make(map[string]void)
 
+	var strMap = make(map[string]string)
 	for i := range kv {
 		itoa := strconv.Itoa(ihash(kv[i].Key) % nReduce)
 		//防止并发问题？
-		var fileName = "/" + strconv.Itoa(workNum) + "-" + itoa + ".txt"
-		set[itoa] = v
-		err := os.WriteFile(fileName, []byte(kv[i].Key+":"+kv[i].Value), fs.ModeAppend)
-		if err != nil {
-			return err
-		}
+		var fileName = strconv.Itoa(workNum) + "-" + itoa + ".txt"
+		strMap[fileName] += kv[i].Key + ":" + kv[i].Value + "\n"
+	}
+	group := sync.WaitGroup{}
+	group.Add(len(strMap))
+	var err error
+	for s := range strMap {
+		s := s
+		go func() {
+			err = writeToFile(s, strMap[s])
+			group.Done()
+		}()
+	}
+	group.Wait()
+	return err
+}
+func writeToFile(filename, data string) error {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_RDWR|os.O_CREATE, fs.ModePerm)
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return err
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	_, err = writer.WriteString(data)
+	if err != nil {
+		fmt.Println("Error writing to file:", err)
+		return err
+	}
+	err = writer.Flush()
+	if err != nil {
+		fmt.Println("Error flushing to file:", err)
+		return err
 	}
 	return nil
 }
@@ -116,9 +180,14 @@ func writeKV(kv []KeyValue, workNum int, nReduce int) error {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	var c *rpc.Client
+	var err error
+	if runtime.GOOS == "windows" {
+		c, err = rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	} else {
+		sockname := coordinatorSock()
+		c, err = rpc.DialHTTP("unix", sockname)
+	}
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
