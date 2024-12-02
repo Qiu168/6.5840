@@ -137,6 +137,7 @@ wait
 rm -f mr-*
 
 # generate the correct output
+# 生成正确的输出
 ../mrsequential ../../mrapps/indexer.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-indexer.txt
 rm -f mr-out*
@@ -147,9 +148,12 @@ maybe_quiet $TIMEOUT ../mrcoordinator ../pg*txt &
 sleep 1
 
 # start multiple workers
+# 启动多个 worker
 maybe_quiet $TIMEOUT ../mrworker ../../mrapps/indexer.so &
 maybe_quiet $TIMEOUT ../mrworker ../../mrapps/indexer.so
 
+# 将 mr-out-* 文件中的内容进行排序并去除空行，
+# 将排序后的结果重定向到 mr-indexer-all 文件中
 sort mr-out* | grep . > mr-indexer-all
 if cmp mr-indexer-all mr-correct-indexer.txt
 then
