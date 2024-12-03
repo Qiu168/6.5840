@@ -70,7 +70,7 @@ func handleReduceJob(args *Args, reducef func(string, []string) string) {
 	var outStr string
 	for key, values := range kvMap {
 		result := reducef(key, values)
-		outStr += fmt.Sprintf("%v\t%v\n", key, result)
+		outStr += fmt.Sprintf("%v %v\n", key, result)
 	}
 	finish(args)
 	if args.ReduceAck {

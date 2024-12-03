@@ -93,12 +93,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &c
 }
 
-var index = atomic.Uint32{}
+var index int64 = 0
 
 func (c *Coordinator) GetJob(a *Args, args *Args) error {
 	args.NReduce = c.nReduce
 	if a.WorkNum == -1 {
-		args.WorkNum = int(index.Add(1))
+		args.WorkNum = int(atomic.AddInt64(&index, 1))
 	}
 	if c.jobCount == 0 {
 		args.IsFinish = true
