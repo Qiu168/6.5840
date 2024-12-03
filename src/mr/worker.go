@@ -42,7 +42,6 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			handleMapJob(args, mapf)
 		}
 
-		finish(args)
 	}
 }
 
@@ -57,6 +56,7 @@ func handleMapJob(args *Args, mapf func(string, string) []KeyValue) {
 	if err := writeKV(keyValues, args.WorkNum, args.NReduce); err != nil {
 		log.Printf("Error in map write kv: %v", err)
 	}
+	finish(args)
 }
 
 func handleReduceJob(args *Args, reducef func(string, []string) string) {
@@ -72,7 +72,16 @@ func handleReduceJob(args *Args, reducef func(string, []string) string) {
 		result := reducef(key, values)
 		outStr += fmt.Sprintf("%v\t%v\n", key, result)
 	}
-	args.Job.Result = outStr
+	finish(args)
+	if args.ReduceAck {
+		go writeResult(args.WorkNum, outStr)
+	}
+}
+
+func writeResult(workNum int, resultStr string) {
+	if err := writeToFile("mr-out-"+strconv.Itoa(workNum), resultStr); err != nil {
+		log.Printf("Error writing to file: %v", err)
+	}
 }
 
 func parseContent(content string) map[string][]string {
@@ -130,7 +139,7 @@ func sortFile(oname string) error {
 }
 
 func finish(args *Args) {
-	call("Coordinator.Finish", args, &struct{}{})
+	call("Coordinator.Finish", args, args)
 }
 
 func getJob(args *Args) *Args {

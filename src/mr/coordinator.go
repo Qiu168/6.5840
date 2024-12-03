@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 type Coordinator struct {
@@ -68,7 +69,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		waitQueue: make(chan *Job, nReduce+len(preciseFileName)),
 		state:     make(chan struct{}),
 		finishSet: make(Set),
-		jobCount:  nReduce + len(preciseFileName) + 1,
+		jobCount:  nReduce + len(preciseFileName),
 		nReduce:   nReduce,
 	}
 	for i := range preciseFileName {
@@ -94,10 +95,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &c
 }
 
+var index = atomic.Uint32{}
+
 func (c *Coordinator) GetJob(a *Args, args *Args) error {
 	args.NReduce = c.nReduce
 	if a.WorkNum == -1 {
-		args.WorkNum = 1
+		args.WorkNum = int(index.Add(1))
 	}
 	if c.jobCount == 0 {
 		args.IsFinish = true
@@ -127,12 +130,11 @@ func (c *Coordinator) GetJob(a *Args, args *Args) error {
 }
 
 var (
-	resultMap   = make(map[string]string)
 	finishedSet = make(Set)
 	mutex       = &sync.Mutex{}
 )
 
-func (c *Coordinator) Finish(args *Args, _ *struct{}) error {
+func (c *Coordinator) Finish(args *Args, ret *Args) error {
 	c.finishSet.add(args.Job.FileName)
 
 	jobType := "reduce"
@@ -151,27 +153,13 @@ func (c *Coordinator) Finish(args *Args, _ *struct{}) error {
 		c.jobCount--
 
 		if args.Job.JobType {
-			resultMap[args.Job.FileName] = args.Job.Result
+			ret.ReduceAck = true
 		}
 
-		if c.jobCount == c.nReduce+1 {
+		if c.jobCount == c.nReduce {
 			c.state <- struct{}{}
-		} else if c.jobCount == 1 {
-			go c.writeAndSortFinalResult()
 		}
 	}
 
 	return nil
-}
-
-func (c *Coordinator) writeAndSortFinalResult() {
-	var resultStr string
-	for _, result := range resultMap {
-		resultStr += result
-	}
-	if err := writeToFile("mr-out-1", resultStr); err != nil {
-		log.Printf("Error writing to file: %v", err)
-	}
-	sortFile("mr-out-1")
-	c.jobCount--
 }

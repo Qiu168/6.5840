@@ -11,10 +11,11 @@ import "strconv"
 
 // Args :RPC args
 type Args struct {
-	Job      *Job
-	IsFinish bool
-	WorkNum  int
-	NReduce  int
+	Job       *Job
+	IsFinish  bool
+	WorkNum   int
+	NReduce   int
+	ReduceAck bool
 }
 
 //func CopyArgs(source *Args, target *Args) {
@@ -36,7 +37,6 @@ type Job struct {
 	JobType bool
 	//发送给worker执行的次数
 	SendTimes int
-	Result    string
 }
 
 // Set : EASY Set
