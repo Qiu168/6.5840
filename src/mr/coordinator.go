@@ -80,15 +80,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		}
 	}
 	go func() {
-		for range c.state {
-			for i := 0; i < nReduce; i++ {
-				c.jobQueue <- &Job{
-					FileName:  "1-" + strconv.Itoa(i) + ".txt",
-					JobType:   true,
-					SendTimes: 0,
-				}
+		<-c.state
+		for i := 0; i < nReduce; i++ {
+			c.jobQueue <- &Job{
+				FileName:  "1-" + strconv.Itoa(i) + ".txt",
+				JobType:   true,
+				SendTimes: 0,
 			}
-			return
 		}
 	}()
 	c.server()
@@ -158,6 +156,7 @@ func (c *Coordinator) Finish(args *Args, ret *Args) error {
 
 		if c.jobCount == c.nReduce {
 			c.state <- struct{}{}
+			close(c.state)
 		}
 	}
 
